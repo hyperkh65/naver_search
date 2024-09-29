@@ -1,14 +1,13 @@
 import streamlit as st
-import os
-import time
 import urllib.request
 import json
 import pandas as pd
 import requests
-import datetime
+import time
 import hashlib
 import hmac
 import base64
+import concurrent.futures
 
 # 사용자 입력 부분을 Streamlit으로 변경
 st.title('Naver Keyword Analysis Tool')
@@ -43,6 +42,48 @@ def get_request_header(method, uri):
         'X-Signature': signature
     }
 
+@st.cache_data
+def get_keyword_analysis(keyword):
+    uri = '/keywordstool'
+    method = 'GET'
+    r = requests.get(
+        BASE_URL + uri,
+        params={'hintKeywords': keyword, 'showDetail': 1},
+        headers=get_request_header(method, uri)
+    )
+    df = pd.DataFrame(r.json()['keywordList'])
+    df['monthlyMobileQcCnt'] = df['monthlyMobileQcCnt'].apply(lambda x: int(str(x).replace('<', '').strip()))
+    df['monthlyPcQcCnt'] = df['monthlyPcQcCnt'].apply(lambda x: int(str(x).replace('<', '').strip()))
+    df = df[(df['monthlyMobileQcCnt'] >= 50) & (df['monthlyPcQcCnt'] >= 50)]
+    df.rename(
+        {'compIdx': '경쟁정도',
+        'monthlyMobileQcCnt': '월간검색수_모바일',
+        'monthlyPcQcCnt': '월간검색수_PC',
+        'relKeyword': '연관키워드'},
+        axis=1,
+        inplace=True
+    )
+    df['총검색수'] = df['월간검색수_PC'] + df['월간검색수_모바일']
+    df = df.sort_values('총검색수', ascending=False)
+    return df
+
+# 문서 수 검색 함수
+def get_total_docs(keyword):
+    encText = urllib.parse.quote(keyword)
+    url = f"https://openapi.naver.com/v1/search/webkr.json?query={encText}"
+    request = urllib.request.Request(url)
+    request.add_header("X-Naver-Client-Id", client_id)
+    request.add_header("X-Naver-Client-Secret", client_secret)
+    response = urllib.request.urlopen(request)
+    rescode = response.getcode()
+
+    if rescode == 200:
+        response_body = response.read()
+        text = response_body.decode('utf-8')
+        return json.loads(text)['total']
+    else:
+        return 0
+
 # Streamlit button for running analysis
 if st.button('분석 실행'):
     tmp_df = pd.DataFrame()
@@ -50,35 +91,8 @@ if st.button('분석 실행'):
     with st.spinner('키워드 분석 중...'):
         for keyword in keywords:
             keyword = keyword.strip()  # Trim whitespace
-            uri = '/keywordstool'
-            method = 'GET'
-            try:
-                r = requests.get(
-                    BASE_URL + uri,
-                    params={'hintKeywords': keyword, 'showDetail': 1},
-                    headers=get_request_header(method, uri)
-                )
-                df = pd.DataFrame(r.json()['keywordList'])
-                df['monthlyMobileQcCnt'] = df['monthlyMobileQcCnt'].apply(lambda x: int(str(x).replace('<', '').strip()))
-                df['monthlyPcQcCnt'] = df['monthlyPcQcCnt'].apply(lambda x: int(str(x).replace('<', '').strip()))
-                df = df[(df['monthlyMobileQcCnt'] >= 50) & (df['monthlyPcQcCnt'] >= 50)]
-                df.rename(
-                    {'compIdx': '경쟁정도',
-                    'monthlyMobileQcCnt': '월간검색수_모바일',
-                    'monthlyPcQcCnt': '월간검색수_PC',
-                    'relKeyword': '연관키워드'},
-                    axis=1,
-                    inplace=True
-                )
-                df['총검색수'] = df['월간검색수_PC'] + df['월간검색수_모바일']
-                df = df.sort_values('총검색수', ascending=False)
-                tmp_df = pd.concat([tmp_df, df], axis=0)
-                time.sleep(1)
-            except Exception as e:
-                st.error(f"에러 발생: {e}")
-                continue
-
-    total_docs = []
+            df = get_keyword_analysis(keyword)
+            tmp_df = pd.concat([tmp_df, df], axis=0)
 
     if not tmp_df.empty:
         # '연관키워드' 개수 출력
@@ -88,33 +102,17 @@ if st.button('분석 실행'):
         progress_bar = st.progress(0)
         progress_text = st.empty()
 
-        for idx, word in enumerate(tmp_df['연관키워드']):
-            encText = urllib.parse.quote(word)
-            url = f"https://openapi.naver.com/v1/search/webkr.json?query={encText}"
-            request = urllib.request.Request(url)
-            request.add_header("X-Naver-Client-Id", client_id)
-            request.add_header("X-Naver-Client-Secret", client_secret)
-            response = urllib.request.urlopen(request)
-            rescode = response.getcode()
-
-            try:
-                if rescode == 200:
-                    response_body = response.read()
-                    text = response_body.decode('utf-8')
-                    total_docs.append(json.loads(text)['total'])
-                else:
-                    st.warning(f"Error Code: {rescode}")
-                    total_docs.append(0)
-            except:
-                total_docs.append(0)
-
-            # Update progress
-            progress_bar.progress((idx + 1) / len(tmp_df['연관키워드']))
-            progress_text.text(f"문서 검색 진행 중... ({idx + 1}/{len(tmp_df['연관키워드'])})")
-            time.sleep(0.5)
+        # 병렬 처리로 문서 검색 수행
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            total_docs = list(executor.map(get_total_docs, tmp_df['연관키워드']))
 
         tmp_df['총문서수'] = total_docs
         tmp_df['경쟁정도_ratio'] = tmp_df['총문서수'] / tmp_df['총검색수']
+
+        # Progress 업데이트
+        for i, word in enumerate(tmp_df['연관키워드']):
+            progress_bar.progress((i + 1) / len(tmp_df['연관키워드']))
+            progress_text.text(f"문서 검색 진행 중... ({i + 1}/{len(tmp_df['연관키워드'])})")
 
         # Display final dataframe
         st.write(tmp_df)
