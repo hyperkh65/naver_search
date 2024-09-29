@@ -8,9 +8,11 @@ import hashlib
 import hmac
 import base64
 import concurrent.futures
+from datetime import datetime, timedelta
+import plotly.graph_objs as go
 
-# 사용자 입력 부분을 Streamlit으로 변경
-st.title('Naver Keyword Analysis Tool')
+# Streamlit 앱 제목
+st.title('네이버 키워드 분석 도구')
 
 # st.secrets에서 API 키를 불러옴
 CUSTOMER_ID = st.secrets["general"]["CUSTOMER_ID"]
@@ -87,15 +89,75 @@ def get_total_docs(keyword):
             else:
                 st.error(f"Error Code {rescode} for keyword: {keyword}")
                 return 0
-    except urllib.error.HTTPError as e:
-        st.error(f"HTTPError: {e.code} for keyword: {keyword}")
-        return 0
-    except urllib.error.URLError as e:
-        st.error(f"URLError: {e.reason} for keyword: {keyword}")
-        return 0
     except Exception as e:
         st.error(f"Exception: {str(e)} for keyword: {keyword}")
         return 0
+
+# 현재 인기 키워드 가져오기
+def get_trending_keywords():
+    url = "https://openapi.naver.com/v1/datalab/search"
+    
+    # 오늘 날짜를 가져옵니다
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    body = {
+        "startDate": today,
+        "endDate": today,
+        "timeUnit": "date",
+        "keywordGroups": [
+            {
+                "groupName": "트렌드",
+                "keywords": [""]
+            }
+        ]
+    }
+
+    headers = {
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret,
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(url, json=body, headers=headers)
+    if response.status_code == 200:
+        return response.json()['results'][0]['data'][0]['keywords']
+    else:
+        return []
+
+# 정보성 키워드 추천
+def get_informational_keywords(df):
+    informational_words = ["방법", "어떻게", "왜", "의미", "차이", "비교"]
+    info_df = df[df['연관키워드'].str.contains('|'.join(informational_words))]
+    info_df = info_df.sort_values(by=['경쟁정도', '총검색수'], ascending=[True, False])
+    return info_df.head(10)
+
+# 키워드 트렌드 분석
+def get_keyword_trend(keyword, start_date, end_date):
+    url = "https://openapi.naver.com/v1/datalab/search"
+    
+    body = {
+        "startDate": start_date,
+        "endDate": end_date,
+        "timeUnit": "month",
+        "keywordGroups": [
+            {
+                "groupName": keyword,
+                "keywords": [keyword]
+            }
+        ]
+    }
+
+    headers = {
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret,
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(url, json=body, headers=headers)
+    if response.status_code == 200:
+        return response.json()['results'][0]['data']
+    else:
+        return []
 
 # Streamlit button for running analysis
 if st.button('분석 실행'):
@@ -136,6 +198,32 @@ if st.button('분석 실행'):
         # 추천 목록을 표로 표시
         st.subheader('추천 키워드 (경쟁정도가 낮고 모바일 검색이 높은 순서)')
         st.write(recommended_df[['연관키워드', '경쟁정도', '월간검색수_모바일']].head(10))  # 상위 10개의 추천 키워드
+
+        # 현재 인기 키워드 표시
+        st.subheader("현재 인기 키워드")
+        trending_keywords = get_trending_keywords()
+        st.write(", ".join(trending_keywords))
+
+        # 정보성 키워드 추천
+        st.subheader("추천 정보성 키워드")
+        info_keywords = get_informational_keywords(tmp_df)
+        st.write(info_keywords[['연관키워드', '경쟁정도', '총검색수']])
+
+        # 키워드 트렌드 분석
+        st.subheader("키워드 트렌드 분석")
+        selected_keyword = st.selectbox("트렌드를 볼 키워드 선택", tmp_df['연관키워드'])
+        start_date = st.date_input("시작 날짜", value=datetime.now() - timedelta(days=365))
+        end_date = st.date_input("종료 날짜", value=datetime.now())
+
+        if st.button("트렌드 보기"):
+            trend_data = get_keyword_trend(selected_keyword, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=[d['period'] for d in trend_data], 
+                                     y=[d['ratio'] for d in trend_data],
+                                     mode='lines+markers'))
+            fig.update_layout(title=f"{selected_keyword} 트렌드", xaxis_title="기간", yaxis_title="검색 비율")
+            st.plotly_chart(fig)
 
         # Provide a download link for the resulting dataframe
         csv = tmp_df.to_csv(index=False).encode('utf-8')
