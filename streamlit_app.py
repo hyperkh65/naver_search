@@ -9,10 +9,13 @@ import hmac
 import base64
 import concurrent.futures
 from datetime import datetime, timedelta
-import plotly.graph_objs as go
+import matplotlib.pyplot as plt
 
 # Streamlit 앱 제목
 st.title('네이버 키워드 분석 도구')
+
+# 사이드바 설정
+st.sidebar.header('분석 옵션')
 
 # st.secrets에서 API 키를 불러옴
 CUSTOMER_ID = st.secrets["general"]["CUSTOMER_ID"]
@@ -21,8 +24,8 @@ SECRET_KEY = st.secrets["general"]["SECRET_KEY"]
 client_id = st.secrets["general"]["client_id"]
 client_secret = st.secrets["general"]["client_secret"]
 
-# 키워드 입력
-keywords = st.text_area('분석할 키워드를 입력하세요 (쉼표로 구분)', 'chatgpt').split(',')
+# 키워드 입력 (사이드바로 이동)
+keywords = st.sidebar.text_area('분석할 키워드를 입력하세요 (쉼표로 구분)', 'chatgpt').split(',')
 
 BASE_URL = 'https://api.naver.com'
 
@@ -159,8 +162,19 @@ def get_keyword_trend(keyword, start_date, end_date):
     else:
         return []
 
-# Streamlit button for running analysis
-if st.button('분석 실행'):
+# 키워드 트렌드 분석 (Matplotlib 사용)
+def plot_keyword_trend(trend_data, keyword):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot([d['period'] for d in trend_data], [d['ratio'] for d in trend_data], marker='o')
+    ax.set_title(f"{keyword} 트렌드")
+    ax.set_xlabel("기간")
+    ax.set_ylabel("검색 비율")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    return fig
+
+# Streamlit button for running analysis (사이드바로 이동)
+if st.sidebar.button('분석 실행'):
     tmp_df = pd.DataFrame()
 
     with st.spinner('키워드 분석 중...'):
@@ -209,21 +223,21 @@ if st.button('분석 실행'):
         info_keywords = get_informational_keywords(tmp_df)
         st.write(info_keywords[['연관키워드', '경쟁정도', '총검색수']])
 
-        # 키워드 트렌드 분석
-        st.subheader("키워드 트렌드 분석")
-        selected_keyword = st.selectbox("트렌드를 볼 키워드 선택", tmp_df['연관키워드'])
-        start_date = st.date_input("시작 날짜", value=datetime.now() - timedelta(days=365))
-        end_date = st.date_input("종료 날짜", value=datetime.now())
+        # 키워드 트렌드 분석 옵션 (사이드바로 이동)
+        st.sidebar.subheader("키워드 트렌드 분석")
+        selected_keyword = st.sidebar.selectbox("트렌드를 볼 키워드 선택", tmp_df['연관키워드'])
+        start_date = st.sidebar.date_input("시작 날짜", value=datetime.now() - timedelta(days=365))
+        end_date = st.sidebar.date_input("종료 날짜", value=datetime.now())
 
-        if st.button("트렌드 보기"):
+        if st.sidebar.button("트렌드 보기"):
             trend_data = get_keyword_trend(selected_keyword, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
             
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=[d['period'] for d in trend_data], 
-                                     y=[d['ratio'] for d in trend_data],
-                                     mode='lines+markers'))
-            fig.update_layout(title=f"{selected_keyword} 트렌드", xaxis_title="기간", yaxis_title="검색 비율")
-            st.plotly_chart(fig)
+            if trend_data:
+                st.subheader(f"{selected_keyword} 트렌드")
+                fig = plot_keyword_trend(trend_data, selected_keyword)
+                st.pyplot(fig)
+            else:
+                st.write("트렌드 데이터를 가져오는데 실패했습니다.")
 
         # Provide a download link for the resulting dataframe
         csv = tmp_df.to_csv(index=False).encode('utf-8')
