@@ -69,19 +69,32 @@ def get_keyword_analysis(keyword):
 
 # 문서 수 검색 함수
 def get_total_docs(keyword):
-    encText = urllib.parse.quote(keyword)
-    url = f"https://openapi.naver.com/v1/search/webkr.json?query={encText}"
-    request = urllib.request.Request(url)
-    request.add_header("X-Naver-Client-Id", client_id)
-    request.add_header("X-Naver-Client-Secret", client_secret)
-    response = urllib.request.urlopen(request)
-    rescode = response.getcode()
+    try:
+        encText = urllib.parse.quote(keyword)
+        url = f"https://openapi.naver.com/v1/search/webkr.json?query={encText}"
+        request = urllib.request.Request(url)
+        request.add_header("X-Naver-Client-Id", client_id)
+        request.add_header("X-Naver-Client-Secret", client_secret)
 
-    if rescode == 200:
-        response_body = response.read()
-        text = response_body.decode('utf-8')
-        return json.loads(text)['total']
-    else:
+        # 타임아웃 설정
+        with urllib.request.urlopen(request, timeout=10) as response:
+            rescode = response.getcode()
+
+            if rescode == 200:
+                response_body = response.read()
+                text = response_body.decode('utf-8')
+                return json.loads(text)['total']
+            else:
+                st.error(f"Error Code {rescode} for keyword: {keyword}")
+                return 0
+    except urllib.error.HTTPError as e:
+        st.error(f"HTTPError: {e.code} for keyword: {keyword}")
+        return 0
+    except urllib.error.URLError as e:
+        st.error(f"URLError: {e.reason} for keyword: {keyword}")
+        return 0
+    except Exception as e:
+        st.error(f"Exception: {str(e)} for keyword: {keyword}")
         return 0
 
 # Streamlit button for running analysis
