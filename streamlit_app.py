@@ -130,6 +130,13 @@ if st.button('분석 실행'):
         # Display final dataframe
         st.write(tmp_df)
 
+        # 경쟁정도가 작고, 모바일 검색이 높은 순으로 정렬
+        recommended_df = tmp_df.sort_values(by=['경쟁정도', '월간검색수_모바일'], ascending=[True, False])
+
+        # 추천 목록을 표로 표시
+        st.subheader('추천 키워드 (경쟁정도가 낮고 모바일 검색이 높은 순서)')
+        st.write(recommended_df[['연관키워드', '경쟁정도', '월간검색수_모바일']].head(10))  # 상위 10개의 추천 키워드
+
         # Provide a download link for the resulting dataframe
         csv = tmp_df.to_csv(index=False).encode('utf-8')
         st.download_button("CSV 다운로드", data=csv, file_name='keyword_analysis.csv', mime='text/csv')
