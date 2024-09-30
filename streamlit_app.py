@@ -7,147 +7,136 @@ import time
 import hashlib
 import hmac
 import base64
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
+import concurrent.futures
 
-# API 키 설정 (st.secrets 사용)
-CUSTOMER_ID = st.secrets["CUSTOMER_ID"]
-API_KEY = st.secrets["API_KEY"]
-SECRET_KEY = st.secrets["SECRET_KEY"]
-client_id = st.secrets["client_id"]
-client_secret = st.secrets["client_secret"]
+# 사용자 입력 부분을 Streamlit으로 변경
+st.title('Naver Keyword Analysis Tool')
 
-# 서명 생성 함수
-def Signature(timestamp, method, uri, secret_key):
-    message = f"{timestamp}.{method}.{uri}"
-    hash = hmac.new(bytes(secret_key, "utf-8"), bytes(message, "utf-8"), hashlib.sha256)
-    return base64.b64encode(hash.digest())
+# st.secrets에서 API 키를 불러옴
+CUSTOMER_ID = st.secrets["general"]["CUSTOMER_ID"]
+API_KEY = st.secrets["general"]["API_KEY"]
+SECRET_KEY = st.secrets["general"]["SECRET_KEY"]
+client_id = st.secrets["general"]["client_id"]
+client_secret = st.secrets["general"]["client_secret"]
 
-# 요청 헤더 생성 함수
-def get_request_header(method, uri, api_key, secret_key, customer_id):
-    timestamp = str(int(time.time() * 1000))
-    signature = Signature(timestamp, method, uri, secret_key)
+# 키워드 입력
+keywords = st.text_area('분석할 키워드를 입력하세요 (쉼표로 구분)', 'chatgpt').split(',')
+
+BASE_URL = 'https://api.naver.com'
+
+class Signature:
+    @staticmethod
+    def generate(timestamp, method, uri, secret_key):
+        message = "{}.{}.{}".format(timestamp, method, uri)
+        hash = hmac.new(bytes(secret_key, "utf-8"), bytes(message, "utf-8"), hashlib.sha256)
+        return base64.b64encode(hash.digest())
+
+def get_request_header(method, uri):
+    timestamp = str(round(time.time() * 1000))
+    signature = Signature.generate(timestamp, method, uri, SECRET_KEY)
     return {
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Timestamp": timestamp,
-        "X-API-KEY": api_key,
-        "X-Customer": str(customer_id),
-        "X-Signature": signature,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Timestamp': timestamp,
+        'X-API-KEY': API_KEY,
+        'X-Customer': str(CUSTOMER_ID),
+        'X-Signature': signature
     }
 
-# 키워드 분석 함수
+@st.cache_data
 def get_keyword_analysis(keyword):
-    uri = "/keywordstool"
-    method = "GET"
-    
-    params = {
-        "hintKeywords": keyword,
-        "showDetail": 1
-    }
-    
-    base_url = "https://api.naver.com"
-    req_url = f"{base_url}{uri}"
-    
-    headers = get_request_header(method, uri, API_KEY, SECRET_KEY, CUSTOMER_ID)
-    response = requests.get(req_url, params=params, headers=headers)
-    
-    if response.status_code == 200:
-        data = response.json()
-        return data.get("keywordList", [])
-    else:
-        st.error(f"API 요청 실패: 상태 코드 {response.status_code}")
-        return []
+    uri = '/keywordstool'
+    method = 'GET'
+    r = requests.get(
+        BASE_URL + uri,
+        params={'hintKeywords': keyword, 'showDetail': 1},
+        headers=get_request_header(method, uri)
+    )
+    df = pd.DataFrame(r.json()['keywordList'])
+    df['monthlyMobileQcCnt'] = df['monthlyMobileQcCnt'].apply(lambda x: int(str(x).replace('<', '').strip()))
+    df['monthlyPcQcCnt'] = df['monthlyPcQcCnt'].apply(lambda x: int(str(x).replace('<', '').strip()))
+    df = df[(df['monthlyMobileQcCnt'] >= 50) & (df['monthlyPcQcCnt'] >= 50)]
+    df.rename(
+        {'compIdx': '경쟁정도',
+        'monthlyMobileQcCnt': '월간검색수_모바일',
+        'monthlyPcQcCnt': '월간검색수_PC',
+        'relKeyword': '연관키워드'},
+        axis=1,
+        inplace=True
+    )
+    df['총검색수'] = df['월간검색수_PC'] + df['월간검색수_모바일']
+    df = df.sort_values('총검색수', ascending=False)
+    return df
 
-# 키워드 트렌드 함수 (캐싱 적용)
-@st.cache_data(ttl=3600)
-def get_keyword_trend(keyword, start_date, end_date):
-    url = "https://openapi.naver.com/v1/datalab/search"
-    body = {
-        "startDate": start_date,
-        "endDate": end_date,
-        "timeUnit": "date",
-        "keywordGroups": [
-            {
-                "groupName": keyword,
-                "keywords": [keyword]
-            }
-        ]
-    }
-    request = urllib.request.Request(url)
-    request.add_header("X-Naver-Client-Id", client_id)
-    request.add_header("X-Naver-Client-Secret", client_secret)
-    request.add_header("Content-Type", "application/json")
+# 문서 수 검색 함수
+def get_total_docs(keyword):
     try:
-        response = urllib.request.urlopen(request, data=json.dumps(body).encode("utf-8"))
-        rescode = response.getcode()
-        if(rescode == 200):
-            response_body = response.read()
-            data = json.loads(response_body.decode('utf-8'))
-            return data['results'][0]['data']
-        else:
-            st.error(f"API 요청 실패: 상태 코드 {rescode}")
-            return None
-    except Exception as e:
-        st.error(f"키워드 트렌드 요청 중 오류 발생: {str(e)}")
-        return None
+        encText = urllib.parse.quote(keyword)
+        url = f"https://openapi.naver.com/v1/search/webkr.json?query={encText}"
+        request = urllib.request.Request(url)
+        request.add_header("X-Naver-Client-Id", client_id)
+        request.add_header("X-Naver-Client-Secret", client_secret)
 
-# 트렌드 시각화 함수
-def plot_keyword_trend(trend_data, keyword):
-    df = pd.DataFrame(trend_data)
-    df['period'] = pd.to_datetime(df['period'])
-    
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(df['period'], df['ratio'])
-    ax.set_title(f"{keyword} 검색 트렌드")
-    ax.set_xlabel("날짜")
-    ax.set_ylabel("검색량 비율")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    return fig
+        # 타임아웃 설정
+        with urllib.request.urlopen(request, timeout=10) as response:
+            rescode = response.getcode()
 
-# 세션 상태 초기화
-if 'trend_data' not in st.session_state:
-    st.session_state.trend_data = None
-if 'selected_keyword' not in st.session_state:
-    st.session_state.selected_keyword = ""
-
-# Streamlit 앱 시작
-st.title("키워드 분석 도구")
-
-# 좌측 옵션 패널 만들기
-with st.sidebar:
-    st.header("검색 설정")
-    keyword = st.text_input("키워드 입력", value=st.session_state.selected_keyword)
-    start_date = st.date_input("시작 날짜", datetime.now() - timedelta(days=30))
-    end_date = st.date_input("종료 날짜", datetime.now())
-    
-    if st.button("트렌드 보기"):
-        if keyword:
-            st.session_state.selected_keyword = keyword
-            start_date_str = start_date.strftime("%Y-%m-%d")
-            end_date_str = end_date.strftime("%Y-%m-%d")
-            st.session_state.trend_data = get_keyword_trend(keyword, start_date_str, end_date_str)
-
-    if st.button("키워드 분석"):
-        if keyword:
-            analysis_results = get_keyword_analysis(keyword)
-            if analysis_results:
-                st.session_state.analysis_results = analysis_results
+            if rescode == 200:
+                response_body = response.read()
+                text = response_body.decode('utf-8')
+                return json.loads(text)['total']
             else:
-                st.session_state.analysis_results = None
+                st.error(f"Error Code {rescode} for keyword: {keyword}")
+                return 0
+    except urllib.error.HTTPError as e:
+        st.error(f"HTTPError: {e.code} for keyword: {keyword}")
+        return 0
+    except urllib.error.URLError as e:
+        st.error(f"URLError: {e.reason} for keyword: {keyword}")
+        return 0
+    except Exception as e:
+        st.error(f"Exception: {str(e)} for keyword: {keyword}")
+        return 0
 
-# 메인 영역에 결과 표시
-if st.session_state.trend_data is not None:
-    st.subheader(f"{st.session_state.selected_keyword} 트렌드")
-    fig = plot_keyword_trend(st.session_state.trend_data, st.session_state.selected_keyword)
-    st.pyplot(fig)
-elif st.session_state.selected_keyword:
-    st.warning("트렌드 데이터를 가져오는데 실패했습니다.")
-else:
-    st.info("키워드를 입력하고 '트렌드 보기' 버튼을 클릭하세요.")
+# Streamlit button for running analysis
+if st.button('분석 실행'):
+    tmp_df = pd.DataFrame()
 
-# 키워드 분석 결과 표시
-if 'analysis_results' in st.session_state and st.session_state.analysis_results:
-    st.subheader("키워드 분석 결과")
-    df = pd.DataFrame(st.session_state.analysis_results)
-    st.dataframe(df)
+    with st.spinner('키워드 분석 중...'):
+        for keyword in keywords:
+            keyword = keyword.strip()  # Trim whitespace
+            df = get_keyword_analysis(keyword)
+            tmp_df = pd.concat([tmp_df, df], axis=0)
+
+    if not tmp_df.empty:
+        # '연관키워드' 개수 출력
+        st.write(f"연관키워드 개수: {len(tmp_df['연관키워드'])}")
+
+        # Progress bar for document search
+        progress_bar = st.progress(0)
+        progress_text = st.empty()
+
+        # 병렬 처리로 문서 검색 수행
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            total_docs = list(executor.map(get_total_docs, tmp_df['연관키워드']))
+
+        tmp_df['총문서수'] = total_docs
+        tmp_df['경쟁정도_ratio'] = tmp_df['총문서수'] / tmp_df['총검색수']
+
+        # Progress 업데이트
+        for i, word in enumerate(tmp_df['연관키워드']):
+            progress_bar.progress((i + 1) / len(tmp_df['연관키워드']))
+            progress_text.text(f"문서 검색 진행 중... ({i + 1}/{len(tmp_df['연관키워드'])})")
+
+        # Display final dataframe
+        st.write(tmp_df)
+
+        # 경쟁정도가 작고, 모바일 검색이 높은 순으로 정렬
+        recommended_df = tmp_df.sort_values(by=['경쟁정도', '월간검색수_모바일'], ascending=[True, False])
+
+        # 추천 목록을 표로 표시
+        st.subheader('추천 키워드 (경쟁정도가 낮고 모바일 검색이 높은 순서)')
+        st.write(recommended_df[['연관키워드', '경쟁정도', '월간검색수_모바일']].head(10))  # 상위 10개의 추천 키워드
+
+        # Provide a download link for the resulting dataframe
+        csv = tmp_df.to_csv(index=False).encode('utf-8')
+        st.download_button("CSV 다운로드", data=csv, file_name='keyword_analysis.csv', mime='text/csv')
