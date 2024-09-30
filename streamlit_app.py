@@ -10,18 +10,17 @@ import base64
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
-# API 키 설정
-CUSTOMER_ID = "your_customer_id"
-API_KEY = "your_api_key"
-SECRET_KEY = "your_secret_key"
-client_id = "your_client_id"
-client_secret = "your_client_secret"
+# API 키 설정 (st.secrets 사용)
+CUSTOMER_ID = st.secrets["CUSTOMER_ID"]
+API_KEY = st.secrets["API_KEY"]
+SECRET_KEY = st.secrets["SECRET_KEY"]
+client_id = st.secrets["client_id"]
+client_secret = st.secrets["client_secret"]
 
 # 서명 생성 함수
 def Signature(timestamp, method, uri, secret_key):
     message = f"{timestamp}.{method}.{uri}"
     hash = hmac.new(bytes(secret_key, "utf-8"), bytes(message, "utf-8"), hashlib.sha256)
-    hash.hexdigest()
     return base64.b64encode(hash.digest())
 
 # 요청 헤더 생성 함수
@@ -81,7 +80,7 @@ def get_keyword_trend(keyword, start_date, end_date):
     try:
         response = urllib.request.urlopen(request, data=json.dumps(body).encode("utf-8"))
         rescode = response.getcode()
-        if(rescode==200):
+        if(rescode == 200):
             response_body = response.read()
             data = json.loads(response_body.decode('utf-8'))
             return data['results'][0]['data']
@@ -115,18 +114,27 @@ if 'selected_keyword' not in st.session_state:
 # Streamlit 앱 시작
 st.title("키워드 분석 도구")
 
-# 사이드바 입력
-st.sidebar.header("검색 설정")
-keyword = st.sidebar.text_input("키워드 입력", value=st.session_state.selected_keyword)
-start_date = st.sidebar.date_input("시작 날짜", datetime.now() - timedelta(days=30))
-end_date = st.sidebar.date_input("종료 날짜", datetime.now())
+# 좌측 옵션 패널 만들기
+with st.sidebar:
+    st.header("검색 설정")
+    keyword = st.text_input("키워드 입력", value=st.session_state.selected_keyword)
+    start_date = st.date_input("시작 날짜", datetime.now() - timedelta(days=30))
+    end_date = st.date_input("종료 날짜", datetime.now())
+    
+    if st.button("트렌드 보기"):
+        if keyword:
+            st.session_state.selected_keyword = keyword
+            start_date_str = start_date.strftime("%Y-%m-%d")
+            end_date_str = end_date.strftime("%Y-%m-%d")
+            st.session_state.trend_data = get_keyword_trend(keyword, start_date_str, end_date_str)
 
-if st.sidebar.button("트렌드 보기"):
-    if keyword:
-        st.session_state.selected_keyword = keyword
-        start_date_str = start_date.strftime("%Y-%m-%d")
-        end_date_str = end_date.strftime("%Y-%m-%d")
-        st.session_state.trend_data = get_keyword_trend(keyword, start_date_str, end_date_str)
+    if st.button("키워드 분석"):
+        if keyword:
+            analysis_results = get_keyword_analysis(keyword)
+            if analysis_results:
+                st.session_state.analysis_results = analysis_results
+            else:
+                st.session_state.analysis_results = None
 
 # 메인 영역에 결과 표시
 if st.session_state.trend_data is not None:
@@ -139,12 +147,7 @@ else:
     st.info("키워드를 입력하고 '트렌드 보기' 버튼을 클릭하세요.")
 
 # 키워드 분석 결과 표시
-if st.sidebar.button("키워드 분석"):
-    if keyword:
-        analysis_results = get_keyword_analysis(keyword)
-        if analysis_results:
-            st.subheader("키워드 분석 결과")
-            df = pd.DataFrame(analysis_results)
-            st.dataframe(df)
-    else:
-        st.warning("키워드를 입력해주세요.")
+if 'analysis_results' in st.session_state and st.session_state.analysis_results:
+    st.subheader("키워드 분석 결과")
+    df = pd.DataFrame(st.session_state.analysis_results)
+    st.dataframe(df)
